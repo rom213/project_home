@@ -3,12 +3,13 @@
 #include <Ticker.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
+#include <ESP32Servo.h>
 
 const char* ssid = "TP-Link_5648";
 const char* password = "12345678";
 
 // Configuración del WebSocket
-const char* host = "192.168.1.103";
+const char* host = "192.168.1.104";
 const int port = 5000;
 const char* path = "/echo";
 
@@ -24,10 +25,12 @@ struct ButtonState {
     bool dinning;
     bool bathroom;
     bool yarn;
+    bool closeDoor;
 };
 
 // Inicializar el estado de los botones
-ButtonState buttonsState = {false, false, false, false, false, false, false, false};
+ButtonState buttonsState = {false, false, false, false, false, false, false, false, false};
+Servo servo;
 
 // Definir los pines GPIO para cada botón
 const int securityPin = 23;
@@ -36,8 +39,10 @@ const int offlightsPin = 21;
 const int alarmPin = 19;
 const int roomPin = 18;
 const int dinningPin = 5;
-const int bathroomPin = 17;
+const int bathroomPin = 4;
 const int yarnPin = 16;
+const int closeDoorPin = 2;
+const int end_of_race_door= 34;
 
 // Función para configurar los pines GPIO
 void setupPins() {
@@ -49,8 +54,30 @@ void setupPins() {
     pinMode(dinningPin, OUTPUT);
     pinMode(bathroomPin, OUTPUT);
     pinMode(yarnPin, OUTPUT);
+    pinMode(end_of_race_door, INPUT_PULLDOWN);
+    servo.attach(closeDoorPin, 500, 2500);
 }
 
+
+// Función para enviar el estado actualizado de los botones al servidor de Node.js
+void sendUpdatedState() {
+    DynamicJsonDocument doc(256);
+    doc["security"] = buttonsState.security;
+    doc["opendoor"] = buttonsState.opendoor;
+    doc["offlights"] = buttonsState.offlights;
+    doc["alarm"] = buttonsState.alarm;
+    doc["room"] = buttonsState.room;
+    doc["dinning"] = buttonsState.dinning;
+    doc["bathroom"] = buttonsState.bathroom;
+    doc["yarn"] = buttonsState.yarn;
+    doc["closeDoor"] = buttonsState.closeDoor;
+
+    String output;
+    serializeJson(doc, output);
+    webSocketClient.sendTXT(output);
+}
+
+int check = 0;
 // Función para actualizar los pines GPIO según el estado de los botones
 void updatePins() {
     digitalWrite(securityPin, buttonsState.security ? HIGH : LOW);
@@ -61,6 +88,34 @@ void updatePins() {
     digitalWrite(dinningPin, buttonsState.dinning ? HIGH : LOW);
     digitalWrite(bathroomPin, buttonsState.bathroom ? HIGH : LOW);
     digitalWrite(yarnPin, buttonsState.yarn ? HIGH : LOW);
+
+    int pinState= digitalRead(end_of_race_door);
+    
+    if (pinState==HIGH && check==0)
+    {
+        check=1;
+        buttonsState.closeDoor = false;
+        sendUpdatedState();
+        delay(200);
+    }
+    
+
+    if (pinState==LOW)
+    {
+        check=0;
+        buttonsState.closeDoor = true;
+        sendUpdatedState();
+    }
+    
+    if (buttonsState.closeDoor && pinState==HIGH) {
+        check=0;
+        buttonsState.closeDoor = false;
+        sendUpdatedState();
+        servo.write(0);
+        delay(1500);
+        servo.write(180);
+        delay(1500);
+    }
 }
 
 // Función de callback para recibir mensajes
@@ -89,6 +144,7 @@ void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
                 buttonsState.dinning = doc["dinning"];
                 buttonsState.bathroom = doc["bathroom"];
                 buttonsState.yarn = doc["yarn"];
+                buttonsState.closeDoor = doc["closeDoor"];
 
                 // Imprimir el estado de cada botón
                 Serial.printf("security: %s\n", buttonsState.security ? "true" : "false");
@@ -99,7 +155,7 @@ void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
                 Serial.printf("dinning: %s\n", buttonsState.dinning ? "true" : "false");
                 Serial.printf("bathroom: %s\n", buttonsState.bathroom ? "true" : "false");
                 Serial.printf("yarn: %s\n", buttonsState.yarn ? "true" : "false");
-
+                Serial.printf("closeDoor: %s\n", buttonsState.closeDoor ? "true" : "false");
                 // Actualizar los pines GPIO según el estado de los botones
                 updatePins();
             } else {

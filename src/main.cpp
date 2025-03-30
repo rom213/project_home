@@ -19,6 +19,7 @@ WebSocketsClient webSocketClient;
 struct ButtonState
 {
     bool security;
+    bool signal_close_door;
     bool opendoor;
     bool offlights;
     bool alarm;
@@ -32,7 +33,7 @@ struct ButtonState
 };
 
 // Inicializar el estado de los botones
-ButtonState buttonsState = {false, false, false, false, false, false, false, false, false, true, true};
+ButtonState buttonsState = {false, false, false, false, false, false, false, false, false, false, true, true};
 Servo servo;
 
 // Estatus del ethernet
@@ -66,7 +67,6 @@ void setupPins()
     pinMode(end_of_race_door, INPUT_PULLDOWN);
     pinMode(on_off_ethernet, INPUT_PULLDOWN);
     pinMode(alarm_detected_pin, INPUT_PULLDOWN);
-
     servo.attach(closeDoorPin, 500, 2500);
 }
 
@@ -83,6 +83,7 @@ void sendUpdatedState()
         doc["alarm"] = buttonsState.alarm;
         doc["room"] = buttonsState.room;
         doc["dinning"] = buttonsState.dinning;
+        doc["signal_close_door"] = buttonsState.signal_close_door;
         doc["bathroom"] = buttonsState.bathroom;
         doc["yarn"] = buttonsState.yarn;
         doc["closeDoor"] = buttonsState.closeDoor;
@@ -103,6 +104,7 @@ void sendUpdatedState()
         doc["alarm"] = buttonsState.alarm;
         doc["room"] = buttonsState.room;
         doc["dinning"] = buttonsState.dinning;
+        doc["signal_close_door"] = buttonsState.signal_close_door;
         doc["bathroom"] = buttonsState.bathroom;
         doc["yarn"] = buttonsState.yarn;
         doc["closeDoor"] = buttonsState.closeDoor;
@@ -115,7 +117,71 @@ void sendUpdatedState()
     }
 }
 
+
+void sendCheckDoor()
+{
+    if (WiFi.status() == WL_CONNECTED)
+    {
+        HTTPClient http;
+        String url = "http://192.168.1.108:5001/socket/checkDoor";  // Ajusta según tu backend
+
+        http.begin(url);
+        http.addHeader("Content-Type", "application/json");  // Especificar JSON en el encabezado
+
+        // Crear el JSON con el estado de la puerta
+        String jsonPayload = "{\"closeDoor\":" + String(buttonsState.closeDoor ? "true" : "false") + "}";
+
+        int httpCode = http.POST(jsonPayload);  // Enviar la solicitud POST
+
+        http.end();  // Cierra la conexión
+    }
+}
+
+
 int check = 0;
+unsigned long lastCheckTime = 0;  // Variable para el temporizador
+
+
+void checkDoor(){
+    int pinState = digitalRead(end_of_race_door);
+
+    if (status_ethernet == true)
+    {
+        if (pinState == HIGH && check == 0)
+        {
+            check = 1;
+            buttonsState.closeDoor = false;
+            sendCheckDoor();
+            delay(200);
+        }
+
+        if (pinState == LOW)
+        {
+            check = 0;
+            buttonsState.closeDoor = true;
+            if (millis() - lastCheckTime >= 5000)
+            {
+                lastCheckTime = millis();
+                sendCheckDoor();
+            }
+        }
+    }
+}
+
+void closeDoor(){
+    if (status_ethernet == true && buttonsState.signal_close_door)
+    {
+        Serial.println("hola se debe cerrar");
+        buttonsState.signal_close_door= false;
+        sendUpdatedState();
+        servo.write(0);
+        delay(1500);
+        servo.write(180);
+        delay(1500);
+    }
+}
+
+
 // Función para actualizar los pines GPIO según el estado de los botones
 void updatePins()
 {
@@ -127,39 +193,6 @@ void updatePins()
     digitalWrite(dinningPin, buttonsState.dinning ? HIGH : LOW);
     digitalWrite(bathroomPin, buttonsState.bathroom ? HIGH : LOW);
     digitalWrite(yarnPin, buttonsState.yarn ? HIGH : LOW);
-
-    int pinState = digitalRead(end_of_race_door);
-
-    if (status_ethernet == true)
-    {
-
-        if (pinState == HIGH && check == 0)
-        {
-            check = 1;
-            buttonsState.closeDoor = false;
-            sendUpdatedState();
-            delay(200);
-        }
-
-        if (pinState == LOW)
-        {
-            check = 0;
-            buttonsState.closeDoor = true;
-            sendUpdatedState();
-        }
-
-        if (buttonsState.closeDoor && pinState == HIGH)
-        {
-            check = 0;
-            Serial.println("cerrando puerta");
-            buttonsState.closeDoor = false;
-            sendUpdatedState();
-            servo.write(0);
-            delay(1500);
-            servo.write(180);
-            delay(1500);
-        }
-    }
 }
 
 // Función de callback para recibir mensajes
@@ -189,6 +222,7 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length)
                 buttonsState.security = doc["security"];
                 buttonsState.opendoor = doc["opendoor"];
                 buttonsState.offlights = doc["offlights"];
+                buttonsState.signal_close_door= doc["signal_close_door"];
                 buttonsState.alarm = doc["alarm"];
                 buttonsState.room = doc["room"];
                 buttonsState.dinning = doc["dinning"];
@@ -323,6 +357,7 @@ void setup()
     setupPins();
     connectToWiFi();
     connectToWebSocket();
+    sendUpdatedState();
 }
 
 bool status_render = true;
@@ -335,12 +370,12 @@ void ethernetControl()
     {
         Serial.println("estado cambiado desde el boton");
         status_ethernet = !status_ethernet;
-        delay(500);
+        delay(700);
     }
 
     if (status_ethernet == true && status_render == true)
     {
-        buttonsState = {false, false, false, false, false, false, false, false, false, false, true};
+        buttonsState = {false, false, false ,false, false, false, false, false, false, false, false, true};
         updatePins();
         sendUpdatedState();
         status_render = false;
@@ -348,7 +383,7 @@ void ethernetControl()
 
     if (status_ethernet == false && status_render == false)
     {
-        buttonsState = {false, false, false, false, false, false, false, false, false, false, true};
+        buttonsState = {false, false, false, false, false, false, false, false, false, false, false, true};
         updatePins();
         if (WiFi.status() == WL_CONNECTED)
         {
@@ -421,4 +456,9 @@ void loop()
     checkAndSendAlarm();
 
     checkEthernetDisconnect();
+
+    checkDoor();
+
+    closeDoor();
+
 }
